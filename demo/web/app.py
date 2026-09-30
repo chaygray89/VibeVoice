@@ -16,6 +16,7 @@ from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -338,6 +339,25 @@ class StreamingTTSService:
 
 
 app = FastAPI()
+
+# Kavqor's hosted receptionist lab talks to this local service through a
+# short-lived HTTPS/WSS tunnel. Keep CORS narrow to Kavqor's Vercel origins.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://ventureq-nebius.vercel.app",
+        "https://ventureq-nebius-ik4o.vercel.app",
+    ],
+    allow_origin_regex=r"^https://ventureq-nebius(?:-ik4o)?(?:-[a-z0-9-]+)?\\.vercel\\.app$",
+    allow_credentials=True,
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
+def health():
+    return {"ok": True, "service": "vibevoice-realtime", "sample_rate": SAMPLE_RATE}
+
 
 CALLFORGE_ORIGINS = {
     "http://localhost:3000",
