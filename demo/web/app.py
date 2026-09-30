@@ -3,6 +3,7 @@ import builtins
 import asyncio
 import json
 import os
+import re
 import threading
 import traceback
 from pathlib import Path
@@ -14,6 +15,7 @@ import torch
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -337,6 +339,42 @@ class StreamingTTSService:
 
 app = FastAPI()
 
+CALLFORGE_ORIGINS = {
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://ventureq-nebius.vercel.app",
+    "https://ventureq-nebius-ik4o.vercel.app",
+}
+CALLFORGE_ORIGIN_RE = re.compile(
+    r"^https://ventureq-nebius(?:-ik4o)?(?:-[a-z0-9-]+)?\.vercel\.app$"
+)
+
+
+def _origin_allowed(origin: Optional[str]) -> bool:
+    if not origin:
+        return True
+    return origin in CALLFORGE_ORIGINS or bool(CALLFORGE_ORIGIN_RE.match(origin))
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=sorted(CALLFORGE_ORIGINS),
+    allow_origin_regex=CALLFORGE_ORIGIN_RE.pattern,
+    allow_credentials=False,
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def _callforge_private_network_access(request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
+    if _origin_allowed(origin):
+        if request.headers.get("access-control-request-private-network", "").lower() == "true":
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
 
 @app.on_event("startup")
 async def _startup() -> None:
@@ -365,6 +403,10 @@ def streaming_tts(text: str, **kwargs) -> Iterator[np.ndarray]:
 
 @app.websocket("/stream")
 async def websocket_stream(ws: WebSocket) -> None:
+    origin = ws.headers.get("origin")
+    if not _origin_allowed(origin):
+        await ws.close(code=1008, reason="Origin not allowed")
+        return
     await ws.accept()
     text = ws.query_params.get("text", "")
     print(f"Client connected, text={text!r}")
@@ -512,7 +554,22 @@ def get_config():
     service: StreamingTTSService = app.state.tts_service
     voices = sorted(service.voice_presets.keys())
     return {
+        "ready": True,
         "voices": voices,
         "default_voice": service.default_voice_key,
+        "sample_rate": service.sample_rate,
+        "model_path": app.state.model_path,
+        "device": app.state.device,
+    }
+
+
+@app.get("/health")
+def health():
+    service: StreamingTTSService = app.state.tts_service
+    return {
+        "status": "ok",
+        "ready": service.model is not None and service.processor is not None,
+        "voices": len(service.voice_presets),
+        "sample_rate": service.sample_rate,
     }
 
